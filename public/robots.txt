@@ -1,0 +1,6 @@
+# Robots.txt for Antoine Goudedranche Portfolio
+User-agent: *
+Allow: /
+
+# Sitemap
+Sitemap: https://antoine-goudedranche-portfolio.vercel.app/sitemap.xml
