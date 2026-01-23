@@ -64,64 +64,10 @@ const FLAG_debug = getUrlParam("debug", null, String);
 // ============================================
 // PERFORMANCE DETECTION SYSTEM
 // ============================================
-// Detects GPU/device capabilities and adjusts simulation parameters
-// High-end: Full quality (10 iterations, high resolution)
-// Mid-range: Balanced (5-7 iterations, medium resolution)
-// Low-end: Optimized (3-4 iterations, lower resolution)
+// Simple laptop vs desktop detection:
+// - Laptop (has battery) → LOW mode (optimized for smooth performance)
+// - Desktop (no battery) → HIGH mode (full quality)
 // ============================================
-
-function detectPerformanceLevel() {
-  const checks = {
-    cores: navigator.hardwareConcurrency || 4,
-    memory: navigator.deviceMemory || 4, // GB (Chrome only)
-    isMobile: /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent),
-    pixelRatio: window.devicePixelRatio || 1,
-    screenSize: window.screen.width * window.screen.height,
-  };
-
-  // WebGL capabilities check
-  let webglScore = 10;
-  try {
-    const canvas = document.createElement('canvas');
-    const glTest = canvas.getContext('webgl2') || canvas.getContext('webgl');
-    if (glTest) {
-      const debugInfo = glTest.getExtension('WEBGL_debug_renderer_info');
-      if (debugInfo) {
-        const gpuRenderer = glTest.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL).toLowerCase();
-        // Detect integrated/weak GPUs
-        const weakGPUs = ['intel', 'hd graphics', 'uhd graphics', 'iris', 'mali', 'adreno', 'powervr', 'apple gpu'];
-        const strongGPUs = ['nvidia', 'geforce', 'rtx', 'gtx', 'radeon', 'rx ', 'vega'];
-        
-        if (strongGPUs.some(g => gpuRenderer.includes(g))) {
-          webglScore = 10; // Dedicated GPU
-        } else if (weakGPUs.some(g => gpuRenderer.includes(g))) {
-          webglScore = 5; // Integrated GPU
-        }
-      }
-      // Check max texture size as performance indicator
-      const maxTextureSize = glTest.getParameter(glTest.MAX_TEXTURE_SIZE);
-      if (maxTextureSize < 4096) webglScore -= 2;
-      if (maxTextureSize < 2048) webglScore -= 3;
-    }
-  } catch (e) {
-    webglScore = 5; // Fallback to mid-range on error
-  }
-
-  // Calculate overall performance score (0-10)
-  let score = 0;
-  score += Math.min(checks.cores / 2, 3); // Max 3 points for cores (6+ cores = max)
-  score += Math.min(checks.memory / 2, 2); // Max 2 points for memory (4GB+ = max)
-  score += checks.isMobile ? 0 : 2; // 2 points for desktop
-  score += webglScore * 0.3; // Up to 3 points from WebGL
-
-  // Determine performance level
-  if (score >= 8) return 'high';
-  if (score >= 5) return 'medium';
-  return 'low';
-}
-
-// Get performance level and set parameters accordingly
-const performanceLevel = detectPerformanceLevel();
 
 const performanceSettings = {
   high: {
@@ -129,12 +75,6 @@ const performanceSettings = {
     scaleMin: 0.4,
     scaleMax: 0.8,
     baseResolution: 1024
-  },
-  medium: {
-    iterations: 5,
-    scaleMin: 0.3,
-    scaleMax: 0.6,
-    baseResolution: 768
   },
   low: {
     iterations: 3,
@@ -144,16 +84,70 @@ const performanceSettings = {
   }
 };
 
-const currentSettings = performanceSettings[performanceLevel];
+// Reactive settings that will be updated after battery detection
+let currentSettings = performanceSettings.high; // Default to high (will be updated)
+let performanceLevel = 'high';
 
-// Allow URL override for testing, otherwise use detected settings
-const FLAG_iteration = getUrlParam("iteration", currentSettings.iterations, Number);
+// Detect if device is a laptop using Battery API
+// Laptops have batteries, desktops don't (except UPS which is rare)
+async function detectDeviceType() {
+  try {
+    // Check if Battery API is available
+    if ('getBattery' in navigator) {
+      const battery = await navigator.getBattery();
+      
+      // If battery is present and charging level is not 100% forever, it's likely a laptop
+      // Desktop PCs without battery will either:
+      // - Not support the API
+      // - Return a battery with level = 1 and charging = true always
+      const isLaptop = battery.level < 1 || !battery.charging || battery.chargingTime !== 0;
+      
+      if (isLaptop) {
+        performanceLevel = 'low';
+        currentSettings = performanceSettings.low;
+      } else {
+        // Could be desktop (always plugged, always at 100%)
+        // But to be safe, also check for mobile devices
+        const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+        if (isMobile) {
+          performanceLevel = 'low';
+          currentSettings = performanceSettings.low;
+        }
+      }
+    } else {
+      // Battery API not available - check other indicators
+      const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+      
+      // Also check for touch capability as laptops often have touchscreens
+      const hasTouch = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+      
+      // Check screen size - laptops typically have smaller screens
+      const isSmallScreen = window.screen.width < 1920 || window.screen.height < 1080;
+      
+      if (isMobile || (hasTouch && isSmallScreen)) {
+        performanceLevel = 'low';
+        currentSettings = performanceSettings.low;
+      }
+    }
+  } catch (e) {
+    // On error, keep default (high)
+    console.warn('Battery detection failed, using default settings');
+  }
 
-// Log performance detection (only in development)
-if (import.meta.env.DEV) {
-  console.log(`🎮 Performance Detection: ${performanceLevel.toUpperCase()}`);
-  console.log(`   → Iterations: ${FLAG_iteration}, Scale: ${currentSettings.scaleMin}-${currentSettings.scaleMax}`);
+  // Log detection result (only in development)
+  if (import.meta.env.DEV) {
+    const deviceType = performanceLevel === 'high' ? '🖥️ Desktop' : '💻 Laptop/Mobile';
+    console.log(`🎮 Device Detection: ${deviceType}`);
+    console.log(`   → Mode: ${performanceLevel.toUpperCase()}`);
+    console.log(`   → Iterations: ${currentSettings.iterations}, Scale: ${currentSettings.scaleMin}-${currentSettings.scaleMax}`);
+  }
 }
+
+// Run detection immediately
+detectDeviceType();
+
+// Allow URL override for testing (e.g., ?iteration=10 or ?iteration=3)
+const FLAG_iteration = getUrlParam("iteration", null, Number);
 
 function createRenderTarget(delayed_set_size = false) {
   const target = new RenderTarget(gl, {
@@ -307,7 +301,9 @@ async function initOGL() {
 
     const maskTexture = canvasRenderer(renderer, renderForeground);
 
-    for (let i = 0; i < FLAG_iteration; i++) {
+    // Use URL override if provided, otherwise use detected settings
+    const iterations = FLAG_iteration !== null ? FLAG_iteration : currentSettings.iterations;
+    for (let i = 0; i < iterations; i++) {
       velocityToPresure(pressure_temp, velocity_temp.texture);
       velocityCorrection(
         velocity,
