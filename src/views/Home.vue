@@ -60,7 +60,100 @@ const renderTargets = [];
 const renderTargets_delayed_set_size = [];
 
 const FLAG_debug = getUrlParam("debug", null, String);
-const FLAG_iteration = getUrlParam("iteration", 10, Number);
+
+// ============================================
+// PERFORMANCE DETECTION SYSTEM
+// ============================================
+// Detects GPU/device capabilities and adjusts simulation parameters
+// High-end: Full quality (10 iterations, high resolution)
+// Mid-range: Balanced (5-7 iterations, medium resolution)
+// Low-end: Optimized (3-4 iterations, lower resolution)
+// ============================================
+
+function detectPerformanceLevel() {
+  const checks = {
+    cores: navigator.hardwareConcurrency || 4,
+    memory: navigator.deviceMemory || 4, // GB (Chrome only)
+    isMobile: /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent),
+    pixelRatio: window.devicePixelRatio || 1,
+    screenSize: window.screen.width * window.screen.height,
+  };
+
+  // WebGL capabilities check
+  let webglScore = 10;
+  try {
+    const canvas = document.createElement('canvas');
+    const glTest = canvas.getContext('webgl2') || canvas.getContext('webgl');
+    if (glTest) {
+      const debugInfo = glTest.getExtension('WEBGL_debug_renderer_info');
+      if (debugInfo) {
+        const gpuRenderer = glTest.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL).toLowerCase();
+        // Detect integrated/weak GPUs
+        const weakGPUs = ['intel', 'hd graphics', 'uhd graphics', 'iris', 'mali', 'adreno', 'powervr', 'apple gpu'];
+        const strongGPUs = ['nvidia', 'geforce', 'rtx', 'gtx', 'radeon', 'rx ', 'vega'];
+        
+        if (strongGPUs.some(g => gpuRenderer.includes(g))) {
+          webglScore = 10; // Dedicated GPU
+        } else if (weakGPUs.some(g => gpuRenderer.includes(g))) {
+          webglScore = 5; // Integrated GPU
+        }
+      }
+      // Check max texture size as performance indicator
+      const maxTextureSize = glTest.getParameter(glTest.MAX_TEXTURE_SIZE);
+      if (maxTextureSize < 4096) webglScore -= 2;
+      if (maxTextureSize < 2048) webglScore -= 3;
+    }
+  } catch (e) {
+    webglScore = 5; // Fallback to mid-range on error
+  }
+
+  // Calculate overall performance score (0-10)
+  let score = 0;
+  score += Math.min(checks.cores / 2, 3); // Max 3 points for cores (6+ cores = max)
+  score += Math.min(checks.memory / 2, 2); // Max 2 points for memory (4GB+ = max)
+  score += checks.isMobile ? 0 : 2; // 2 points for desktop
+  score += webglScore * 0.3; // Up to 3 points from WebGL
+
+  // Determine performance level
+  if (score >= 8) return 'high';
+  if (score >= 5) return 'medium';
+  return 'low';
+}
+
+// Get performance level and set parameters accordingly
+const performanceLevel = detectPerformanceLevel();
+
+const performanceSettings = {
+  high: {
+    iterations: 10,
+    scaleMin: 0.4,
+    scaleMax: 0.8,
+    baseResolution: 1024
+  },
+  medium: {
+    iterations: 5,
+    scaleMin: 0.3,
+    scaleMax: 0.6,
+    baseResolution: 768
+  },
+  low: {
+    iterations: 3,
+    scaleMin: 0.25,
+    scaleMax: 0.5,
+    baseResolution: 512
+  }
+};
+
+const currentSettings = performanceSettings[performanceLevel];
+
+// Allow URL override for testing, otherwise use detected settings
+const FLAG_iteration = getUrlParam("iteration", currentSettings.iterations, Number);
+
+// Log performance detection (only in development)
+if (import.meta.env.DEV) {
+  console.log(`🎮 Performance Detection: ${performanceLevel.toUpperCase()}`);
+  console.log(`   → Iterations: ${FLAG_iteration}, Scale: ${currentSettings.scaleMin}-${currentSettings.scaleMax}`);
+}
 
 function createRenderTarget(delayed_set_size = false) {
   const target = new RenderTarget(gl, {
@@ -183,10 +276,10 @@ async function initOGL() {
       displayTexture(velocity_temp, velocity.texture, false);
 
       const scale = Math.max(
-        0.4,
+        currentSettings.scaleMin,
         Math.min(
-          0.8,
-          (1024 / Math.min(renderer.width, renderer.height)) *
+          currentSettings.scaleMax,
+          (currentSettings.baseResolution / Math.min(renderer.width, renderer.height)) *
             window.devicePixelRatio
         )
       );
